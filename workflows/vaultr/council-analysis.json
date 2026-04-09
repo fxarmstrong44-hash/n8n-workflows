@@ -1,0 +1,65 @@
+{
+  "name": "Vaultr Council Analysis Pipeline",
+  "description": "Runs daily AI council analysis on watchlist symbols. Stores results and notifies users of strong signals.",
+  "version": "1.0.0",
+  "nodes": [
+    {
+      "id": "daily-trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [0, 0],
+      "parameters": {
+        "rule": { "interval": [{ "field": "hours", "hoursInterval": 24 }] }
+      }
+    },
+    {
+      "id": "get-watchlists",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [200, 0],
+      "parameters": {
+        "url": "={{$env.VAULTR_API_URL}}/api/portfolio?type=watchlist",
+        "method": "GET",
+        "headers": { "Authorization": "Bearer {{$env.VAULTR_SERVICE_KEY}}" }
+      }
+    },
+    {
+      "id": "run-council",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [400, 0],
+      "parameters": {
+        "url": "={{$env.VAULTR_API_URL}}/api/ai/council",
+        "method": "POST",
+        "headers": { "Authorization": "Bearer {{$env.VAULTR_SERVICE_KEY}}" },
+        "body": { "symbol": "={{$json.symbol}}", "userId": "={{$json.userId}}" }
+      }
+    },
+    {
+      "id": "filter-strong-signals",
+      "type": "n8n-nodes-base.if",
+      "position": [600, 0],
+      "parameters": {
+        "conditions": { "number": [{ "value1": "={{$json.consensusScore}}", "operation": "largerEqual", "value2": 0.6 }] }
+      }
+    },
+    {
+      "id": "notify-user",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [800, 0],
+      "parameters": {
+        "url": "={{$env.VAULTR_API_URL}}/api/market/alerts",
+        "method": "POST",
+        "body": {
+          "userId": "={{$json.userId}}",
+          "type": "opportunity",
+          "symbol": "={{$json.symbol}}",
+          "message": "Council signal: {{$json.symbol}} {{$json.direction}} ({{$json.consensusScore}}% consensus, {{$json.confidence}}% confidence)"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "daily-trigger": { "main": [[{ "node": "get-watchlists" }]] },
+    "get-watchlists": { "main": [[{ "node": "run-council" }]] },
+    "run-council": { "main": [[{ "node": "filter-strong-signals" }]] },
+    "filter-strong-signals": { "main": [[{ "node": "notify-user" }]] }
+  }
+}

@@ -1,0 +1,79 @@
+{
+  "name": "Vaultr Market Alert Pipeline",
+  "description": "Monitors price changes, volume spikes, and sentiment shifts. Triggers alerts via Supabase + email.",
+  "version": "1.0.0",
+  "nodes": [
+    {
+      "id": "cron-trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [0, 0],
+      "parameters": {
+        "rule": { "interval": [{ "field": "minutes", "minutesInterval": 5 }] }
+      }
+    },
+    {
+      "id": "fetch-watchlist",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [200, 0],
+      "parameters": {
+        "url": "={{$env.VAULTR_API_URL}}/api/market/alerts",
+        "method": "GET",
+        "headers": { "Authorization": "Bearer {{$env.VAULTR_SERVICE_KEY}}" }
+      }
+    },
+    {
+      "id": "check-prices",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [400, 0],
+      "parameters": {
+        "url": "https://api.binance.com/api/v3/ticker/price",
+        "method": "GET"
+      }
+    },
+    {
+      "id": "evaluate-conditions",
+      "type": "n8n-nodes-base.code",
+      "position": [600, 0],
+      "parameters": {
+        "jsCode": "const alerts = $input.all();\nconst triggered = [];\nfor (const alert of alerts) {\n  const { symbol, condition, currentPrice } = alert.json;\n  if (condition.type === 'price_above' && currentPrice > condition.threshold) {\n    triggered.push({ ...alert.json, triggerType: 'price_above' });\n  }\n  if (condition.type === 'price_below' && currentPrice < condition.threshold) {\n    triggered.push({ ...alert.json, triggerType: 'price_below' });\n  }\n  if (condition.type === 'volume_spike' && alert.json.volumeRatio > 2.0) {\n    triggered.push({ ...alert.json, triggerType: 'volume_spike' });\n  }\n}\nreturn triggered.map(t => ({ json: t }));"
+      }
+    },
+    {
+      "id": "send-notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [800, 0],
+      "parameters": {
+        "url": "={{$env.VAULTR_API_URL}}/api/market/alerts",
+        "method": "POST",
+        "body": {
+          "userId": "={{$json.userId}}",
+          "type": "price",
+          "symbol": "={{$json.symbol}}",
+          "message": "={{$json.symbol}} triggered {{$json.triggerType}} alert"
+        }
+      }
+    },
+    {
+      "id": "send-email",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [800, 200],
+      "parameters": {
+        "url": "https://api.resend.com/emails",
+        "method": "POST",
+        "headers": { "Authorization": "Bearer {{$env.RESEND_API_KEY}}" },
+        "body": {
+          "from": "alerts@vaultr.co.za",
+          "to": "={{$json.userEmail}}",
+          "subject": "Vaultr Alert: {{$json.symbol}}",
+          "html": "<h2>{{$json.symbol}} Alert Triggered</h2><p>{{$json.triggerType}}: Current price {{$json.currentPrice}}</p>"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "cron-trigger": { "main": [[{ "node": "fetch-watchlist" }]] },
+    "fetch-watchlist": { "main": [[{ "node": "check-prices" }]] },
+    "check-prices": { "main": [[{ "node": "evaluate-conditions" }]] },
+    "evaluate-conditions": { "main": [[{ "node": "send-notification" }, { "node": "send-email" }]] }
+  }
+}

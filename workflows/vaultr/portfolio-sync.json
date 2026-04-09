@@ -1,0 +1,81 @@
+{
+  "name": "Vaultr Portfolio Sync",
+  "description": "Syncs portfolio positions with real-time prices every 15 minutes. Updates P&L and triggers rebalance alerts.",
+  "version": "1.0.0",
+  "nodes": [
+    {
+      "id": "schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [0, 0],
+      "parameters": {
+        "rule": { "interval": [{ "field": "minutes", "minutesInterval": 15 }] }
+      }
+    },
+    {
+      "id": "fetch-portfolios",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [200, 0],
+      "parameters": {
+        "url": "={{$env.VAULTR_API_URL}}/api/portfolio?active=true",
+        "method": "GET",
+        "headers": { "Authorization": "Bearer {{$env.VAULTR_SERVICE_KEY}}" }
+      }
+    },
+    {
+      "id": "fetch-prices",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [400, 0],
+      "parameters": {
+        "url": "={{$env.VAULTR_API_URL}}/api/market/data?symbols={{$json.symbols}}",
+        "method": "GET"
+      }
+    },
+    {
+      "id": "calculate-pnl",
+      "type": "n8n-nodes-base.code",
+      "position": [600, 0],
+      "parameters": {
+        "jsCode": "const positions = $input.all();\nconst updates = [];\nfor (const pos of positions) {\n  const { entryPrice, currentPrice, quantity, side } = pos.json;\n  const pnl = side === 'long'\n    ? (currentPrice - entryPrice) * quantity\n    : (entryPrice - currentPrice) * quantity;\n  const pnlPercent = ((currentPrice - entryPrice) / entryPrice * 100).toFixed(2);\n  updates.push({\n    json: { ...pos.json, pnl, pnlPercent, needsRebalance: Math.abs(pnlPercent) > 10 }\n  });\n}\nreturn updates;"
+      }
+    },
+    {
+      "id": "update-database",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [800, 0],
+      "parameters": {
+        "url": "={{$env.VAULTR_API_URL}}/api/portfolio",
+        "method": "PATCH",
+        "body": { "positions": "={{$json}}" }
+      }
+    },
+    {
+      "id": "rebalance-check",
+      "type": "n8n-nodes-base.if",
+      "position": [800, 200],
+      "parameters": {
+        "conditions": { "boolean": [{ "value1": "={{$json.needsRebalance}}", "value2": true }] }
+      }
+    },
+    {
+      "id": "rebalance-alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1000, 200],
+      "parameters": {
+        "url": "={{$env.VAULTR_API_URL}}/api/market/alerts",
+        "method": "POST",
+        "body": {
+          "userId": "={{$json.userId}}",
+          "type": "opportunity",
+          "message": "Portfolio rebalance suggested: {{$json.symbol}} is {{$json.pnlPercent}}% from entry"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "schedule": { "main": [[{ "node": "fetch-portfolios" }]] },
+    "fetch-portfolios": { "main": [[{ "node": "fetch-prices" }]] },
+    "fetch-prices": { "main": [[{ "node": "calculate-pnl" }]] },
+    "calculate-pnl": { "main": [[{ "node": "update-database" }, { "node": "rebalance-check" }]] },
+    "rebalance-check": { "main": [[{ "node": "rebalance-alert" }]] }
+  }
+}
